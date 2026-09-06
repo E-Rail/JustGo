@@ -25,6 +25,7 @@ struct ProfileView: View {
     @Environment(TripMemoryService.self) private var tripMemoryService
     @State private var destination: ProfileDestination?
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         Group {
@@ -45,14 +46,20 @@ struct ProfileView: View {
         }
         #endif
         // Quick Tags → a station → "Route here" switches to the Map tab and pushes the entry page
-        // *underneath* this still-open sheet, so the rider's tap appeared to do nothing. Whoever
-        // records a pending route is leaving Profile; close what is covering the map.
-        .onChange(of: appState.pendingRouteInput) { _, pending in
-            if pending != nil { destination = nil }
+        // *underneath* this still-open sheet, so the rider's tap appeared to do nothing. Close what
+        // is covering the map whenever this tab stops being the one on screen.
+        //
+        // Keyed on the tab, not on `pendingRouteInput`. That is a one-shot channel and
+        // `MapContainerView` both reads it and nils it, so whether this handler ever saw a
+        // non-nil value depended on which body SwiftUI happened to evaluate first — and when the
+        // map won, the Profile sheet stayed sitting over the results it had just pushed. The tab
+        // is set in the same frame by the same caller and nothing consumes it.
+        .onChange(of: appState.selectedTab) { _, tab in
+            if tab != .profile { destination = nil }
         }
     }
 
-    /// The phone shape, unchanged. Five rows that each raise a sheet.
+    /// The phone shape: rows that raise a sheet.
     private var stackLayout: some View {
         NavigationStack {
             profileList
@@ -60,7 +67,7 @@ struct ProfileView: View {
         }
     }
 
-    /// The tablet shape: the same five rows as a permanent sidebar, and whatever is selected
+    /// The tablet shape: the same rows as a permanent sidebar, and whatever is selected
     /// filling the rest of the window.
     ///
     /// Five modals on a screen this size was the wrong answer twice over. It buried every one of
@@ -89,10 +96,8 @@ struct ProfileView: View {
 
     private var profileList: some View {
         List {
-            accessibilitySection
-            riderTrustSection
-            transitDataSection
-            settingsSection
+            activitySection
+            appSection
             aboutSection
         }
         .navigationTitle(AppLocalization.localized("Profile"))
@@ -115,99 +120,42 @@ struct ProfileView: View {
         }
     }
 
-    private var accessibilitySection: some View {
+    /// What the rider has put into the app.
+    private var activitySection: some View {
         Section {
-            Button(action: { destination = .accessibility }) {
-                HStack {
-                    Image(systemName: "accessibility")
-                        .foregroundStyle(Color.accentColor)
-                    Text(AppLocalization.localized("Accessibility Settings"))
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
+            row(
+                AppLocalization.localized("Quick Tags"),
+                icon: "tag.fill",
+                detail: "\(tripMemoryService.stationQuickTags.count)"
+            ) { destination = .quickTags }
+            row(AppLocalization.localized("My Trips"), icon: "bookmark.fill") {
+                destination = .tripMemory
             }
-            .buttonStyle(.plain)
-        } header: {
-            Text(AppLocalization.localized("Accessibility"))
-        }
-    }
-
-    private var transitDataSection: some View {
-        Section {
-            Button(action: { destination = .transitData }) {
-                HStack {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .foregroundStyle(.green)
-                    Text(AppLocalization.localized("Transit Data"))
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } header: {
-            Text(AppLocalization.localized("Data Source"))
-        }
-    }
-
-    private var riderTrustSection: some View {
-        Section {
-            Button(action: { destination = .quickTags }) {
-                HStack {
-                    Image(systemName: "tag.fill")
-                        .foregroundStyle(Color.accentColor)
-                    Text(AppLocalization.localized("Quick Tags"))
-                    Spacer()
-                    Text("\(tripMemoryService.stationQuickTags.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Button(action: { destination = .tripMemory }) {
-                HStack {
-                    Image(systemName: "bookmark.fill")
-                        .foregroundStyle(Color.accentColor)
-                    Text(AppLocalization.localized("My Trips"))
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
         } header: {
             Text(AppLocalization.localized("My Activity"))
         }
     }
 
-    private var settingsSection: some View {
+    /// The three screens that are not "your stuff" and not "about the app", in one group.
+    ///
+    /// These were three separate sections, two of which held a single row under a header that
+    /// restated it — an "Accessibility" header over a row called "Accessibility Settings", a
+    /// "Data Source" header over a row called "Transit Data" — and the third was a headerless
+    /// island holding Settings alone. Four headers for seven rows made a short screen read as a
+    /// long one. No header here on purpose: three rows together are a group, where one row alone
+    /// was an orphan, and any header naming the group would restate one of the rows again.
+    private var appSection: some View {
         Section {
-            Button(action: { destination = .settings }) {
-                HStack {
-                    Image(systemName: "gear")
-                        .foregroundStyle(.gray)
-                    Text(AppLocalization.localized("Settings"))
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
+            row(AppLocalization.localized("Settings"), icon: "gearshape.fill") {
+                destination = .settings
             }
-            .buttonStyle(.plain)
+            row(AppLocalization.localized("Accessibility"), icon: "accessibility") {
+                destination = .accessibility
+            }
+            row(
+                AppLocalization.localized("Transit Data"),
+                icon: "antenna.radiowaves.left.and.right"
+            ) { destination = .transitData }
         }
     }
 
@@ -222,30 +170,69 @@ struct ProfileView: View {
                 Text(verbatim: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                     .foregroundStyle(.secondary)
             }
-
-            Link(destination: AppWebLinks.privacyPolicy) {
-                HStack {
-                    Text(AppLocalization.localized("Privacy Policy"))
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .foregroundStyle(.primary)
-            }
-
-            Link(destination: AppWebLinks.termsOfService) {
-                HStack {
-                    Text(AppLocalization.localized("Terms of Service"))
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .foregroundStyle(.primary)
-            }
+            linkRow(AppLocalization.localized("Privacy Policy"), url: AppWebLinks.privacyPolicy)
+            linkRow(AppLocalization.localized("Terms of Service"), url: AppWebLinks.termsOfService)
         } header: {
             Text(AppLocalization.localized("About"))
         }
+    }
+
+    /// One row shape for every door out of this screen.
+    ///
+    /// These were six hand-written `HStack`s, and they had already drifted: Transit Data's icon
+    /// was green where every sibling was the accent, and Settings' was grey. Same rule as
+    /// `StationAccessPointRow` — one implementation, because copies of a row diverge.
+    private func row(
+        _ title: String,
+        icon: String,
+        detail: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                Label {
+                    Text(title)
+                } icon: {
+                    // Tinted by hand: `.buttonStyle(.plain)` takes the icon's accent along with
+                    // the label's, which is the whole reason the label is legible here.
+                    Image(systemName: icon)
+                        .foregroundStyle(Color.accentColor)
+                }
+                Spacer()
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// A row that leaves the app.
+    ///
+    /// A `Button` with `.buttonStyle(.plain)` rather than a `Link`, for the same reason the App
+    /// Tour row in Settings is one: a `Link` tints its entire label with the accent, and a
+    /// `.foregroundStyle(.primary)` inside it is inert. Privacy Policy and Terms therefore
+    /// rendered as two orange rows in the same card as a black `Version`, which reads as three
+    /// different kinds of control rather than one list.
+    private func linkRow(_ title: String, url: URL) -> some View {
+        Button {
+            openURL(url)
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -1,6 +1,5 @@
 "About" = "About";
 "Accessibility" = "Accessibility";
-"Accessibility Settings" = "Accessibility Settings";
 "App Language" = "App Language";
 "Arriving" = "Arriving";
 "OK" = "OK";
@@ -24,7 +23,7 @@
 "Fully Accessible" = "Fully Accessible";
 "Hearing" = "Hearing";
 "High Contrast Mode" = "High Contrast Mode";
-"Language changes take effect after restarting Just-Go." = "Language changes take effect after restarting Just-Go.";
+"Takes effect after you quit and reopen the app." = "Takes effect after you quit and reopen the app.";
 "Large Text" = "Large Text";
 "Least Walking" = "Least Walking";
 "Lines" = "Lines";
@@ -37,7 +36,6 @@
 "No route found between these stations." = "No route found between these stations.";
 "Route data format changed. Please try again later." = "Route data format changed. Please try again later.";
 "Accessibility not verified" = "Accessibility not verified";
-"Data Source" = "Data Source";
 "Feature available" = "Feature available";
 "Long walking segment" = "Long walking segment";
 "Walking-heavy route" = "Walking-heavy route";
