@@ -212,12 +212,26 @@ actor ShanghaiStationInformationProvider: OfficialStationInformationProviding {
         }
     }
 
+    /// One station's live first/last-train picture.
+    ///
+    /// The request shape matters as much as the parsing here. This used to be strictly serial —
+    /// colours, then the station, then one first/last call **per line serving it** — and the whole
+    /// chain was raced against `requestTimeout`, the budget of a *single* request. 世纪大道 is
+    /// served by lines 2, 4, 6 and 9, so it was six round trips inside the time allowed for one:
+    /// at a perfectly healthy 900 ms each that is 5.4 s and the answer was thrown away as
+    /// `.timedOut` even though every request had succeeded. The interchanges where first and last
+    /// train matter most are precisely the ones with the most lines to ask about.
+    ///
+    /// Two phases now instead of 2 + N. Colours and the station record are independent, and the
+    /// per-line calls are independent of each other.
     private static func performFetch(
         _ request: PreparedRequest,
         using session: URLSession
     ) async throws -> OfficialStationInformationSnapshot {
-        let colors = try await lineColors(using: session)
-        let station = try await stationInfo(statID: request.primaryKey, using: session)
+        async let colorsTask = lineColors(using: session)
+        async let stationTask = stationInfo(statID: request.primaryKey, using: session)
+        let colors = try await colorsTask
+        let station = try await stationTask
 
         guard let name = trimmed(station.nameCn) else {
             throw OfficialStationInformationProviderError.contractViolation("station name missing")
@@ -229,10 +243,28 @@ actor ShanghaiStationInformationProvider: OfficialStationInformationProviding {
             )
         }
 
+        // Indexed so the result keeps the catalog's line order: a task group finishes in whatever
+        // order the network answers, and the order these are listed in is the order the rider reads.
+        let keys = request.lineStationIDs
+        let rowsByIndex = try await withThrowingTaskGroup(
+            of: (Int, Int, [FirstLastRow]).self
+        ) { group -> [Int: (Int, [FirstLastRow])] in
+            for (index, key) in keys.enumerated() {
+                guard let lineNumber = Int(key.prefix(2)) else { continue }
+                group.addTask {
+                    (index, lineNumber, try await firstLast(line: lineNumber, statID: key, using: session))
+                }
+            }
+            var collected: [Int: (Int, [FirstLastRow])] = [:]
+            for try await (index, lineNumber, rows) in group {
+                collected[index] = (lineNumber, rows)
+            }
+            return collected
+        }
+
         var lines: [OfficialStationLineInformation] = []
-        for key in request.lineStationIDs {
-            guard let lineNumber = Int(key.prefix(2)) else { continue }
-            let rows = try await firstLast(line: lineNumber, statID: key, using: session)
+        for index in keys.indices {
+            guard let (lineNumber, rows) = rowsByIndex[index] else { continue }
             let services = mergedServices(rows)
             guard !services.isEmpty else { continue }
             lines.append(OfficialStationLineInformation(
@@ -269,11 +301,14 @@ actor ShanghaiStationInformationProvider: OfficialStationInformationProviding {
         return colors
     }
 
+    /// One row of the fltime response: a direction with its first and last train.
+    private typealias FirstLastRow = (direction: String, first: String?, last: String?)
+
     private static func firstLast(
         line: Int,
         statID: String,
         using session: URLSession
-    ) async throws -> [(direction: String, first: String?, last: String?)] {
+    ) async throws -> [FirstLastRow] {
         let data = try await get(query: "func=fltime&line=\(line)", using: session)
         guard let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
             throw OfficialStationInformationProviderError.contractViolation("fltime response invalid")
@@ -356,7 +391,7 @@ actor ShanghaiStationInformationProvider: OfficialStationInformationProviding {
     /// Group `func=fltime` rows by direction, keeping the earliest first train and latest last
     /// train across a direction's short-turn runs. The same service-day merge the recipe requires.
     private static func mergedServices(
-        _ rows: [(direction: String, first: String?, last: String?)]
+        _ rows: [FirstLastRow]
     ) -> [OfficialStationServiceInformation] {
         var order: [String] = []
         var byDirection: [String: OfficialStationServiceInformation] = [:]

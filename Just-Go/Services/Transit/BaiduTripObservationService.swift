@@ -545,10 +545,23 @@ enum TransitLineMatching {
         return token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
+    /// Whether a numbered line reduced to bare digits. `contains` is safe between two names but
+    /// never between two numbers, and `normalizedLineToken` returns the digits alone.
+    private static func isNumeric(_ token: String) -> Bool {
+        !token.isEmpty && token.allSatisfy(\.isNumber)
+    }
+
     static func linesMatch(_ lhs: String, _ rhs: String) -> Bool {
         let left = normalizedLineToken(lhs)
         let right = normalizedLineToken(rhs)
         guard !left.isEmpty, !right.isEmpty else { return false }
+        // Numbers compare exactly. `contains` here made "4" match "14", so 4号线 and 14号线 were
+        // treated as the same line — and they meet at 北京南站, where a rider changes between them.
+        // Nine Beijing interchanges pair two lines whose numbers are a substring of each other
+        // (北京南站, 国贸, 大望路, 二里沟, 公主坟, 大屯路东, 木樨地, 永安里, 回龙观东大街).
+        // `TransferGeometry.matches` applies this with no second filter; the service-hours path
+        // survived only because `ServiceHoursResolver` happens to re-filter exactly afterwards.
+        if isNumeric(left) || isNumeric(right) { return left == right }
         return left == right || left.contains(right) || right.contains(left)
     }
 
