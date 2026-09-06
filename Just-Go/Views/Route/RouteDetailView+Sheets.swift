@@ -17,7 +17,7 @@ extension RouteDetailView {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(AppLocalization.localized("Cancel")) { showTripNote = false }
+                    Button(AppLocalization.localized("Cancel")) { tripCardSheet = nil }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(AppLocalization.localized("Save")) {
@@ -27,7 +27,7 @@ extension RouteDetailView {
                             note: tripNote
                         )
                         tripLoggedConfirmation = true
-                        showTripNote = false
+                        tripCardSheet = nil
                     }
                 }
             }

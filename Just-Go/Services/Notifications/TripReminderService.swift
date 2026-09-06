@@ -26,8 +26,8 @@ final class TripReminderService {
         (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
-    /// Schedules the reminder `leadMinutes` before leave-by. Returns false if there is
-    /// nothing to schedule (the fire time is already in the past).
+    /// Schedules the reminder `leadMinutes` before leave-by. Returns false when nothing was
+    /// scheduled: the fire time is already past, or `add` refused the request.
     @discardableResult
     func scheduleReminder(routeID: UUID, plan: DeparturePlan, leadMinutes: Int) async -> Bool {
         cancelReminder(routeID: routeID)
@@ -52,8 +52,16 @@ final class TripReminderService {
         components.calendar = ChinaClock.calendar
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
         let request = UNNotificationRequest(identifier: identifier(for: routeID), content: content, trigger: trigger)
-        try? await center.add(request)
-        return true
+        // `add` throws — the 64-pending-notification limit is the reachable one — and the
+        // caller acts on this answer: `RouteDetailView` cancels the *previous* route's
+        // reminder and paints the row as set. Swallowing the throw and returning true
+        // destroyed two reminders and created none, while telling the rider it worked.
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func cancelReminder(routeID: UUID) {
@@ -62,7 +70,7 @@ final class TripReminderService {
 
     /// Schedules an estimated "get off" alert to fire at `fireDate`. Timing is derived from the
     /// route's segment durations: there is NO live train-position feed, so the copy says so.
-    /// Returns false if the fire time is already in the past.
+    /// Returns false when nothing was scheduled: the time is past, or `add` refused it.
     @discardableResult
     func scheduleArrivalReminder(stationID: String, stationName: String, exitHint: String?, fireDate: Date) async -> Bool {
         cancelArrivalReminder(stationID: stationID)
@@ -88,8 +96,13 @@ final class TripReminderService {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
         let request = UNNotificationRequest(identifier: arrivalIdentifier(for: stationID), content: content, trigger: trigger)
-        try? await center.add(request)
-        return true
+        // Same reason as `scheduleReminder` above: the caller acts on this answer.
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func cancelArrivalReminder(stationID: String) {
