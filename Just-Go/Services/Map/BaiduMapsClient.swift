@@ -85,6 +85,9 @@ enum BaiduMapsError: Error, Equatable {
     /// Baidu answered, and said no. `status` is its own code. 302/210 Are quota and permission.
     case service(status: Int, message: String)
     case malformedResponse
+    /// The transport answered, but not with a 200. Distinct from `.service`, which is Baidu
+    /// answering properly and saying no.
+    case http(status: Int)
     /// This launch has already made as many calls to that endpoint as it is allowed. Local, so it
     /// costs no round trip, and indistinguishable to every caller from having no key at all.
     case budgetExhausted(path: String)
@@ -103,6 +106,35 @@ private final class SessionTaskBox: @unchecked Sendable {
     private let lock = NSLock()
     private var task: URLSessionDataTask?
     private var cancelled = false
+    private var waiters = 0
+
+    /// Callers currently waiting on this one shared transfer.
+    ///
+    /// `cancel()` used to be armed for the *originating* caller alone and tore down the transfer
+    /// that every coalesced caller was also awaiting. With the planner running Baidu under a
+    /// 3-second budget while this client spaces requests 350 ms apart and admits two at a time,
+    /// the first caller's deadline expiring while queued cancelled the second caller's answer too
+    /// — which then reported "unavailable" with almost its whole budget unspent, and the shared
+    /// budget unit already charged. The transfer is only abandoned once nobody is left waiting.
+    func addWaiter() {
+        lock.lock()
+        waiters += 1
+        lock.unlock()
+    }
+
+    func removeWaiter() {
+        lock.lock()
+        waiters -= 1
+        guard waiters <= 0 else {
+            lock.unlock()
+            return
+        }
+        cancelled = true
+        let pending = task
+        task = nil
+        lock.unlock()
+        pending?.cancel()
+    }
 
     func adopt(_ task: URLSessionDataTask) {
         lock.lock()
@@ -198,7 +230,9 @@ actor BaiduMapsClient {
     /// The per-service caches check on the way in and write on the way out, so two identical plans
     /// starting together both miss and both spend a call. This closes that window, and it closes it
     /// for every endpoint at once rather than once per service.
-    private var coalescing: [String: Task<Data, Error>] = [:]
+    /// In-flight requests by URL, with the handle that can stop each one. The box travels
+    /// with the task because joined callers need it too — see `SessionTaskBox.addWaiter`.
+    private var coalescing: [String: (task: Task<Data, Error>, box: SessionTaskBox)] = [:]
 
     init(configuration: BaiduMapsConfiguration, session: URLSession? = nil) {
         self.configuration = configuration
@@ -245,8 +279,21 @@ actor BaiduMapsClient {
 
         let data = try await fetch(url, path: path)
 
-        guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else {
+        let decoded: Response
+        do {
+            decoded = try JSONDecoder().decode(Response.self, from: data)
+        } catch {
+            // The real decoding error, not just "malformed". Without it the diagnostics cannot
+            // tell an HTML error page from a schema change, which are opposite problems.
+            //
+            // Written into the same per-endpoint failure the Transit Data screen already shows,
+            // rather than through `AppLog`: this file has no app dependencies at all, which is
+            // what lets `Scripts/test_baidu_request_gate.sh` compile it on its own.
             record(BaiduMapsError.malformedResponse, for: path)
+            failures[path] = BaiduEndpointDiagnostics.Failure(
+                at: Date(),
+                summary: "malformed response: \(error)"
+            )
             throw BaiduMapsError.malformedResponse
         }
         guard decoded.status == 0 else {
@@ -266,7 +313,14 @@ actor BaiduMapsClient {
     private func fetch(_ url: URL, path: String) async throws -> Data {
         let key = url.absoluteString
         if let existing = coalescing[key] {
-            return try await existing.value
+            // A joined caller counts as a waiter, and gets a cancellation handler of its own, so
+            // walking away drops only its own claim on the shared transfer.
+            existing.box.addWaiter()
+            return try await withTaskCancellationHandler {
+                try await existing.task.value
+            } onCancel: {
+                existing.box.removeWaiter()
+            }
         }
 
         // Baidu has already said no about this endpoint and said it recently. Every other provider
@@ -323,13 +377,14 @@ actor BaiduMapsClient {
                 throw BaiduMapsError.service(status: -1, message: error.localizedDescription)
             }
         }
-        coalescing[key] = task
+        coalescing[key] = (task, sessionTask)
         defer { coalescing[key] = nil }
+        sessionTask.addWaiter()
         do {
             return try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: {
-                sessionTask.cancel()
+                sessionTask.removeWaiter()
             }
         } catch {
             record(error, for: path)
@@ -341,12 +396,27 @@ actor BaiduMapsClient {
     /// waiting can stop the transfer rather than merely stop listening to it.
     private static func data(from url: URL, session: URLSession, box: SessionTaskBox) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
-            let task = session.dataTask(with: url) { data, _, error in
+            let task = session.dataTask(with: url) { data, response, error in
                 if let error {
                     continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: data ?? Data())
+                    return
                 }
+                // The response used to be discarded. A gateway 502, or a captive portal, answers
+                // with `error == nil` and an HTML body: the decode below then failed as
+                // `.malformedResponse`, which `record` does not treat as a refusal, so nothing
+                // held the client off and it spent the endpoint's whole 200-request launch budget
+                // — real units of a shared non-commercial daily quota — against a page that was
+                // never JSON. Every other network path in this app checks the status; this one did
+                // not.
+                guard let http = response as? HTTPURLResponse else {
+                    continuation.resume(throwing: BaiduMapsError.malformedResponse)
+                    return
+                }
+                guard http.statusCode == 200 else {
+                    continuation.resume(throwing: BaiduMapsError.http(status: http.statusCode))
+                    return
+                }
+                continuation.resume(returning: data ?? Data())
             }
             box.adopt(task)
             task.resume()
@@ -388,6 +458,11 @@ actor BaiduMapsClient {
         switch error {
         case .notConfigured: return
         case .malformedResponse: summary = "malformed response"
+        case .http(let status):
+            summary = "HTTP \(status)"
+            // Held off like one of Baidu's own refusals. A gateway error or an intercepted
+            // response does not clear within a second, and asking again only spends quota.
+            refusedUntil[path] = ContinuousClock.now.advanced(by: Self.refusalHoldOff)
         case .budgetExhausted: summary = "this launch's own budget for this endpoint"
         case .refusedRecently: summary = "held off after a recent refusal"
         case .service(let status, let message):
