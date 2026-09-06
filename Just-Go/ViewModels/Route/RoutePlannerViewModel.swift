@@ -12,6 +12,11 @@ enum RouteInputField: Hashable, Identifiable {
     var id: Self { self }
 }
 
+/// `@MainActor` for the same reason `MapViewModel` is: it publishes SwiftUI-observed state, and
+/// it reads `LocationService`, whose state now lives on the main actor. Without this the
+/// observed properties below were mutated from whatever executor an unstructured `Task` landed
+/// on.
+@MainActor
 @Observable
 final class RoutePlannerViewModel {
     var originName: String = ""

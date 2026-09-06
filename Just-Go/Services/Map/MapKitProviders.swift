@@ -3,18 +3,59 @@ import MapKit
 
 struct MapKitTimeoutError: Error {}
 
-/// Races `operation` against a deadline so a stalled MapKit call (MKLocalSearch, MKDirections)
-/// can't hang a user-facing spinner indefinitely. MapKit calls are known elsewhere in this
-/// codebase to ignore Swift task cancellation, so the abandoned call may keep running in the
-/// background after this throws, but the caller (and its loading UI) is unblocked either way.
+/// Something MapKit will actually stop when told to. `MKDirections`, `MKLocalSearch` and
+/// `CLGeocoder` each have a `cancel()`; none of them observes Swift task cancellation.
+///
+/// A class rather than a value, and `@unchecked Sendable` with a lock, for the reason
+/// `SessionTaskBox` in `BaiduMapsClient` is: the deadline that cancels and the task that runs are
+/// different tasks, so this is genuinely shared mutable state. Same shape, same justification.
+final class MapKitOperationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancel: (() -> Void)?
+
+    init(cancel: @escaping () -> Void) {
+        self.cancel = cancel
+    }
+
+    func cancelOperation() {
+        lock.lock()
+        let work = cancel
+        cancel = nil
+        lock.unlock()
+        work?()
+    }
+
+    /// Releases the closure once the operation has finished on its own, so the captured MapKit
+    /// object is not held alive by a deadline that no longer matters.
+    func finish() {
+        lock.lock()
+        cancel = nil
+        lock.unlock()
+    }
+}
+
+/// Races `operation` against a deadline so a stalled MapKit call can't hang a user-facing spinner.
+///
+/// The `box` is not optional decoration — it is the whole mechanism. `withThrowingTaskGroup`
+/// cannot return while a child is still running: `cancelAll()` only *marks* children, and
+/// `MKDirections.calculate()`, `MKLocalSearch.start()` and `CLGeocoder.reverseGeocodeLocation` are
+/// ObjC completion-handler APIs bridged to async with no cancellation forwarding. So the previous
+/// version of this function, whose own comment said the caller was "unblocked either way", was
+/// not: a 30-second MapKit stall returned after 30 seconds, not after the 12 it promised. Calling
+/// the operation's own `cancel()` is what makes the deadline real.
 func withMapKitTimeout<T: Sendable>(
     seconds: TimeInterval = 12,
+    box: MapKitOperationBox,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
+        group.addTask {
+            defer { box.finish() }
+            return try await operation()
+        }
         group.addTask {
             try await Task.sleep(for: .seconds(seconds))
+            box.cancelOperation()
             throw MapKitTimeoutError()
         }
         defer { group.cancelAll() }
@@ -44,6 +85,10 @@ struct CurrentPlaceResolver {
     /// A fix good enough to route from, already in the map's coordinate frame. Throws rather than
     /// returning nil: "you have not allowed this" and "it never arrived" need different words on
     /// screen, and only the error carries which one happened.
+    ///
+    /// `@MainActor` because every branch below reads `LocationService` state, and that is where
+    /// that state lives. Nothing here computes; the two `await`s suspend rather than block.
+    @MainActor
     func coordinate() async throws -> CLLocationCoordinate2D {
         if let recent = locationService.currentLocation,
            recent.horizontalAccuracy >= 0,
@@ -170,8 +215,9 @@ final class MapKitWalkingRouteProvider: WalkingRouteProviding {
         request.transportType = .walking
         let mapRoute: MKRoute?
         do {
-            mapRoute = try await withMapKitTimeout {
-                try await MKDirections(request: request).calculate().routes.first
+            let directions = MKDirections(request: request)
+            mapRoute = try await withMapKitTimeout(box: MapKitOperationBox { directions.cancel() }) {
+                try await directions.calculate().routes.first
             }
         } catch {
             AppLog.routing.info("Walking directions unavailable, using straight-line estimate: \(error)")
@@ -297,8 +343,9 @@ final class MapKitWalkingRouteProvider: WalkingRouteProviding {
         request.transportType = .automobile
         let mapRoute: MKRoute?
         do {
-            mapRoute = try await withMapKitTimeout {
-                try await MKDirections(request: request).calculate().routes.first
+            let directions = MKDirections(request: request)
+            mapRoute = try await withMapKitTimeout(box: MapKitOperationBox { directions.cancel() }) {
+                try await directions.calculate().routes.first
             }
         } catch {
             AppLog.routing.info("Driving directions unavailable, falling back to the walking leg: \(error)")
@@ -371,8 +418,9 @@ final class MapKitPlaceSearchProvider: PlaceSearchProviding {
         }
 
         do {
-            let response = try await withMapKitTimeout {
-                try await MKLocalSearch(request: request).start()
+            let search = MKLocalSearch(request: request)
+            let response = try await withMapKitTimeout(box: MapKitOperationBox { search.cancel() }) {
+                try await search.start()
             }
             return response.mapItems.prefix(limit).map {
                 TransitPlace(mapItem: $0, source: .mapKit)
@@ -387,8 +435,9 @@ final class MapKitPlaceSearchProvider: PlaceSearchProviding {
         // instance and cancels a prior request when a new one starts, so a shared instance
         // would make overlapping reverse-geocodes (e.g. quick Current-Location taps across
         // fields) cancel each other. Reverse-geocode is one-shot, not a hot path.
-        let placemarks = try await withMapKitTimeout {
-            try await CLGeocoder().reverseGeocodeLocation(
+        let geocoder = CLGeocoder()
+        let placemarks = try await withMapKitTimeout(box: MapKitOperationBox { geocoder.cancelGeocode() }) {
+            try await geocoder.reverseGeocodeLocation(
                 CLLocation(latitude: location.latitude, longitude: location.longitude)
             )
         }
