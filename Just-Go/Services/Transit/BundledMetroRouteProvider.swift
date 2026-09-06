@@ -293,7 +293,12 @@ actor BundledMetroRouteProvider: TransitRouteProviding {
         for network in networks {
             for line in network.lines where canonicalLine[line.id] == nil {
                 for pattern in line.servicePatterns {
-                    for pair in pattern.adjacentPairs {
+                    // Resolved for the whole pattern at once, not per pair. Each hop's geometry
+                    // continues from where the previous one ended, which is what keeps a drawn leg
+                    // in one piece — see `MetroTrackGeometry.pattern`.
+                    let ordered = pattern.map { stationsByID[resolve($0)] }
+                    let geometries = MetroTrackGeometry.pattern(stations: ordered, line: line)
+                    for (index, pair) in pattern.adjacentPairs.enumerated() {
                         guard let from = stationsByID[resolve(pair.0)],
                               let to = stationsByID[resolve(pair.1)],
                               from.id != to.id else { continue }
@@ -305,7 +310,7 @@ actor BundledMetroRouteProvider: TransitRouteProviding {
                         adjacency[from.id, default: []].append(edge)
                         adjacency[to.id, default: []].append(reversed)
 
-                        let geometry = edgeGeometry(edge, stations: stationsByID, line: line)
+                        let geometry = index < geometries.count ? geometries[index] : []
                         edgeGeometries[edge.key] = geometry
                         edgeGeometries[reversed.key] = Array(geometry.reversed())
                     }
@@ -518,13 +523,4 @@ actor BundledMetroRouteProvider: TransitRouteProviding {
         max(60, distance / 9.7 + 30)
     }
 
-    private func edgeGeometry(_ edge: MetroGraphEdge, stations: [String: MetroStation], line: MetroLine) -> [CodableCoordinate] {
-        guard let from = stations[edge.fromStationID], let to = stations[edge.toStationID] else { return [] }
-        return MetroTrackGeometry.edge(
-            from: from.coordinate,
-            to: to.coordinate,
-            separation: edge.distance,
-            line: line
-        )
-    }
 }
