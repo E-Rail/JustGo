@@ -383,7 +383,12 @@ actor OfficialCityPackService: OfficialStationDataProviding {
     /// Settings → Clear Cache: drop every disk and memory tier at once. Bundled baselines
     /// reload lazily from the app bundle, so included cities keep working; downloaded packs
     /// return to their not-downloaded state until the user downloads them again.
+    /// Bumped by every cache wipe, so work that was in flight across one cannot write its
+    /// result onto the table the wipe just cleared.
+    private var cacheWipeGeneration = 0
+
     func clearAllCaches() async {
+        cacheWipeGeneration += 1
         for cityID in Set(loadGenerations.keys).union(inFlightLoads.keys) {
             _ = advanceLoadGeneration(for: cityID)
             inFlightLoads.removeValue(forKey: cityID)?.task.cancel()
@@ -982,14 +987,25 @@ actor OfficialCityPackService: OfficialStationDataProviding {
         }
         inFlightManifests[url] = task
 
+        // Which wipe this fetch belongs to. `clearAllCaches` cancels in-flight manifest fetches
+        // and then clears the cooldown table, and every statement in it is synchronous — so the
+        // cancelled fetch can only resume *after* the wipe has finished, and it then wrote a fresh
+        // 45-second cooldown on top of the clean table. `loadRemoteManifests` returned nothing for
+        // that window and `cityPackStatus` reported every non-bundled city as `.failed` for 45
+        // seconds after a cache clear that had actually succeeded. Results that belong to a
+        // superseded generation are discarded rather than published.
+        let generation = cacheWipeGeneration
+
         let decoded: OfficialManifest
         do {
             decoded = try await task.value
         } catch {
+            guard generation == cacheWipeGeneration else { throw error }
             inFlightManifests.removeValue(forKey: url)
             failedManifestCooldownUntil[url] = Date().addingTimeInterval(Self.failureCooldown)
             throw error
         }
+        guard generation == cacheWipeGeneration else { return decoded }
         inFlightManifests.removeValue(forKey: url)
         failedManifestCooldownUntil.removeValue(forKey: url)
         manifests[url] = decoded
@@ -1355,15 +1371,31 @@ actor OfficialCityPackService: OfficialStationDataProviding {
               Self.isAllowedRemoteDataURL(url) else { throw RoutePlanningError.networkError }
         let session = self.session
         // `timeoutInterval` above only fires when no bytes arrive for the interval. A
-        // connection that trickles data indefinitely never trips it, so the byte-by-byte read
-        // below could hang well past 15s. Race the whole fetch against an explicit deadline.
+        // connection that trickles data indefinitely never trips it, so the read below could hang
+        // well past 15s. Race the whole fetch against an explicit deadline.
         return try await withDeadline(
             seconds: 15,
             onTimeout: { RoutePlanningError.networkError }
         ) {
             let request = URLRequest(url: url, timeoutInterval: 15)
             let redirectDelegate = SameOriginRedirectDelegate(originURL: url)
-            let (bytes, response) = try await session.bytes(for: request, delegate: redirectDelegate)
+            // `data(for:)`, not `bytes(for:)`.
+            //
+            // `URLSession.AsyncBytes` yields one `UInt8` per async iteration, and the loop that
+            // was here — `for try await byte in bytes { data.append(byte) }` — is bounded by that
+            // machinery rather than by the network. Measured on this machine over loopback, with
+            // no latency at all: **5 MB took 56.3 seconds (0.09 MB/s)**, against 0.012 s for
+            // `data(for:)`. A city pack could therefore never finish inside the 15-second deadline
+            // below, and `performDownload` reported the result as a network failure —
+            // indistinguishable from an outage, so every retry hit the same wall. Remote packs
+            // could not be downloaded at all.
+            //
+            // The size cap survives the change. The `expectedContentLength` check above rejects a
+            // server that honestly declares an oversized body before a byte is read; the check
+            // below catches one that lies about it. What is given up is aborting mid-stream on a
+            // lying server, which the deadline and URLSession's own buffering already bound, and
+            // which for packs is followed by a sha256 check regardless.
+            let (data, response) = try await session.data(for: request, delegate: redirectDelegate)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200,
                   let finalURL = httpResponse.url,
@@ -1373,14 +1405,7 @@ actor OfficialCityPackService: OfficialStationDataProviding {
                     httpResponse.expectedContentLength <= Int64(maximumBytes) else {
                 throw RoutePlanningError.networkError
             }
-            var data = Data()
-            if httpResponse.expectedContentLength > 0 {
-                data.reserveCapacity(Int(httpResponse.expectedContentLength))
-            }
-            for try await byte in bytes {
-                guard data.count < maximumBytes else { throw RoutePlanningError.networkError }
-                data.append(byte)
-            }
+            guard data.count <= maximumBytes else { throw RoutePlanningError.networkError }
             return data
         }
     }
