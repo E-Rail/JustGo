@@ -15,6 +15,7 @@ struct TransitDataView: View {
     /// in a column, so a Done button there is a control that looks live and does nothing.
     var showsDoneButton = true
     @Environment(DIContainer.self) private var container
+    @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
     @StateObject private var state = TransitDataState()
     /// What this launch has spent against the route provider, and what it was last refused.
@@ -391,8 +392,15 @@ struct TransitDataView: View {
         .padding(.vertical, 3)
     }
 
+    /// A `Button` with `.buttonStyle(.plain)` rather than a `Link`, for the reason
+    /// `ProfileView.linkRow` records: a `Link` tints its entire label with the accent, and the
+    /// `.foregroundStyle(.primary)` / `.secondary` below are inert inside one. These three rows —
+    /// the licence-mandatory OpenStreetMap, DATA.GOV.HK and 臺北大眾捷運 attributions — rendered
+    /// fully accent-coloured beside ordinary rows in the same list.
     private func attributionLink(title: String, detail: String, url: URL) -> some View {
-        Link(destination: url) {
+        Button {
+            openURL(url)
+        } label: {
             HStack(spacing: 12) {
                 Image(systemName: "doc.text")
                     .foregroundStyle(Color.accentColor)
@@ -408,10 +416,11 @@ struct TransitDataView: View {
                 Spacer()
                 Image(systemName: "arrow.up.right")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.accentColor)
             }
             .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }
 

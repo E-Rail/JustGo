@@ -248,9 +248,14 @@ struct SearchPageView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .foregroundStyle(isOn ? Color.white : Color.primary)
-            .background(isOn ? Color.accentColor : Color.appSurface, in: Capsule())
-            .overlay(Capsule().stroke(isOn ? Color.clear : Color(.separator), lineWidth: 1))
+            // Tinted, not filled, matching `SortChip`. `Color.accentColor` is the theme lifted to
+            // 0.62 luminance *for foreground legibility on a dark background*
+            // (`legibleOnDarkBackground`), so using it as a fill under white text collapses the
+            // contrast it exists to protect — this chip measured near 2.6:1 in dark mode, where
+            // 4.5:1 is the floor. Same mistake, same fix, as the sort chip on the results screen.
+            .foregroundStyle(isOn ? Color.accentColor : Color.primary)
+            .background(isOn ? Color.accentColor.opacity(0.18) : Color.appSurface, in: Capsule())
+            .overlay(Capsule().stroke(isOn ? Color.accentColor.opacity(0.55) : Color(.separator), lineWidth: 1))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -463,7 +468,15 @@ struct SearchPageView: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
+                        // The glyph is ~22 pt; the target has to be 44. The Back button at the
+                        // top of this same screen already does both of these.
+                        .tappable()
                 }
+                .accessibilityLabel(AppLocalization.text(
+                    english: "Clear the search",
+                    simplified: "清除搜索内容",
+                    traditional: "清除搜尋內容"
+                ))
             }
         }
         .padding(.horizontal, 14)

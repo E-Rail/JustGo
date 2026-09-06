@@ -43,10 +43,6 @@ struct RouteResultsView: View {
     @State private var selectedRouteID: UUID?
     @State private var timingMode: TripTimingMode = .now
     @State private var chosenDate = Date()
-    // Raw theme hex for the solid-fill chip below. See RouteEntryView's identical
-    // declaration for why `Color.accentColor` (dark-mode-lightened for foreground use)
-    // isn't used as a fill under white text.
-    @AppStorage("selectedThemeHex") private var selectedThemeHex = AppTheme.default.rawValue
 
     var body: some View {
         List {
@@ -243,28 +239,34 @@ struct RouteResultsView: View {
 
     private func endpointRow(_ field: RouteInputField) -> some View {
         let name = viewModel.name(for: field).trimmingCharacters(in: .whitespacesAndNewlines)
-        return Button {
-            onEditEndpoint(field)
-        } label: {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(field == .origin ? Color.green : Color.red)
-                    .frame(width: 9, height: 9)
-                // An unfilled end says what to do about it rather than sitting blank. This
-                // header is the only place the trip's ends can be corrected now.
-                Text(name.isEmpty ? placeholder(for: field) : name)
-                    .font(.subheadline)
-                    .fontWeight(name.isEmpty ? .regular : .medium)
-                    .foregroundStyle(name.isEmpty ? Color.secondary : Color.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+        let showsLocate = field == .origin && container.locationService.isAuthorized
+        // The locate button is a sibling, not an `.overlay`. As an overlay it was painted on top
+        // of a `Text` that was free to grow to the row's full width, so a long name — which in
+        // Chinese is the normal case, 广州白云国际机场T2航站楼 — ran its truncation tail underneath
+        // the 44 pt glyph, in a header that is pinned on screen the whole time.
+        return HStack(spacing: 0) {
+            Button {
+                onEditEndpoint(field)
+            } label: {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(field == .origin ? Color.green : Color.red)
+                        .frame(width: 9, height: 9)
+                    // An unfilled end says what to do about it rather than sitting blank. This
+                    // header is the only place the trip's ends can be corrected now.
+                    Text(name.isEmpty ? placeholder(for: field) : name)
+                        .font(.subheadline)
+                        .fontWeight(name.isEmpty ? .regular : .medium)
+                        .foregroundStyle(name.isEmpty ? Color.secondary : Color.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 9)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 9)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .trailing) {
-            if field == .origin, container.locationService.isAuthorized {
+            .buttonStyle(.plain)
+
+            if showsLocate {
                 Button(action: onUseCurrentLocation) {
                     Image(systemName: "location.circle.fill")
                         .font(.title3)
@@ -312,14 +314,15 @@ struct RouteResultsView: View {
     private var routesSection: some View {
         Section {
             ForEach(viewModel.routes) { route in
+                // No `.scrollTransition` here. It was a settle-in effect for cards entering from
+                // the edge, and inside a `List` its phase never reaches `.identity` at all: every
+                // card sat permanently in the non-identity branch, so the whole results list
+                // rendered at 60% opacity and read as unloaded placeholder content. Measured off
+                // a screenshot: the accent on a card sampled rgb(205,160,111) against
+                // rgb(175,100,17) for the identical accent on the sort chip a few points above it,
+                // which is exactly #AF6411 at alpha 0.6 over the card surface. These cards are the
+                // one thing on this screen a rider reads; decoration does not get to dim them.
                 comparisonRow(route)
-                    // Cards settle in as they enter rather than appearing fully formed at the
-                    // edge. Subtle on purpose: this is a list a rider scans, not one they admire.
-                    .scrollTransition(.interactive) { content, phase in
-                        content
-                            .opacity(phase.isIdentity ? 1 : 0.6)
-                            .scaleEffect(phase.isIdentity ? 1 : 0.97)
-                    }
             }
         } header: {
             Text(viewModel.routes.count == 1
@@ -336,6 +339,7 @@ struct RouteResultsView: View {
     /// and the single thing wrong with it if there is one. Tapping records the planned trip and
     /// opens the detail.
     private func comparisonRow(_ route: Route) -> some View {
+        let isSelected = route.id == selectedRouteID
         let metrics = comparisonMetrics(for: route)
         let feasibility = container.routeFeasibilityService.feasibility(for: route)
         let confidence = routeConfidence(for: route, feasibility: feasibility)
@@ -459,8 +463,20 @@ struct RouteResultsView: View {
             .padding(Metrics.l)
             .frame(maxWidth: .infinity, alignment: .leading)
             .cardSurface()
+            // The row the rider last opened, marked. `selectedRouteID` has been computed, kept
+            // current across a re-sort and a re-plan, and read by nothing — so coming back from a
+            // route detail, the card you just opened was indistinguishable from the others, and
+            // VoiceOver was told nothing either. Tinted stroke rather than a filled card, for the
+            // reason `SortChip` records: the accent is lifted for foreground use.
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
+                        .stroke(Color.accentColor.opacity(0.55), lineWidth: 2)
+                }
+            }
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         // A route card stretched across a 1366-point iPad is a phone layout that got wider, not a
         // design. Capped and centred; on a phone the cap is larger than the screen and does nothing.
         .readableColumn()

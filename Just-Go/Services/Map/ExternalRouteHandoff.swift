@@ -172,7 +172,25 @@ enum ExternalRouteHandoff {
         }
     }
 
+    /// Percent-encodes everything a query value must not carry through raw.
+    ///
+    /// `.alphanumerics` was the wrong set: it is the Unicode letter, mark and number categories, so
+    /// CJK ideographs are `Lo` and pass through **unencoded**. `encoded("人民广场")` returned
+    /// "人民广场" — a no-op for this app's primary language, which is the only language most of
+    /// these place names are in. Delimiters were encoded, so nothing could be injected, and iOS 18's
+    /// URL parser has been covering for it; but a function whose whole job is to encode should not
+    /// depend on that.
+    ///
+    /// ASCII unreserved (RFC 3986 §2.3) and nothing else, so every non-ASCII byte is escaped.
+    private static let queryValueAllowed: CharacterSet = {
+        var allowed = CharacterSet(charactersIn: "A"..."Z")
+        allowed.formUnion(CharacterSet(charactersIn: "a"..."z"))
+        allowed.formUnion(CharacterSet(charactersIn: "0"..."9"))
+        allowed.insert(charactersIn: "-._~")
+        return allowed
+    }()
+
     private static func encoded(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        value.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? ""
     }
 }
