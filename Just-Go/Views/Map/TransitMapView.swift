@@ -2,8 +2,17 @@ import MapKit
 import SwiftUI
 
 struct MetroGeometryAttributionView: View {
+    @Environment(\.openURL) private var openURL
+
     var body: some View {
-        Link(destination: URL(string: "https://www.openstreetmap.org/copyright")!) {
+        // A `Button` with `.buttonStyle(.plain)`, not a `Link`. A `Link` tints its whole label with
+        // the accent and a `.foregroundStyle(.secondary)` inside it is inert — so this licence
+        // credit rendered in the theme colour on all three maps that show it, where the design is a
+        // quiet grey caption. `.buttonStyle(.plain)` is not a `Link` modifier either; it was doing
+        // nothing here. Same swap `ProfileView.linkRow` makes for the same reason.
+        Button {
+            openURL(URL(string: "https://www.openstreetmap.org/copyright")!)
+        } label: {
             Text(AppLocalization.localized("Metro geometry © OpenStreetMap contributors"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -12,6 +21,11 @@ struct MetroGeometryAttributionView: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.small, style: .continuous))
+                // ODbL attribution is licence-mandatory, so it has to stay readable and stay
+                // tappable. The pill itself is ~21 pt tall; this gives it a real target without
+                // growing the visible chrome over the map.
+                .frame(minHeight: Metrics.minimumTapTarget)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(AppLocalization.localized("Metro geometry © OpenStreetMap contributors"))
@@ -30,6 +44,15 @@ struct TransitMapView: UIViewRepresentable {
     let metroNetworks: [MetroNetwork]
     let route: Route?
     let showsUserLocation: Bool
+    /// How much of the map's own top edge this app's floating chrome covers — the search pill and
+    /// the attribution/locate row — measured rather than assumed, so Dynamic Type moves it too.
+    /// Everything MapKit centres is centred inside the layout margins, so without this a rider
+    /// centred on themselves is centred behind the search bar. See `ChromeInsetMapView`.
+    var topChromeHeight: CGFloat = 0
+    /// How heavily to draw the network's own lines. Heavier on a page about a single line, where
+    /// the browse map's weight — chosen so a dozen lines can cross without becoming a mat — reads
+    /// as a hairline on the one line the page is about.
+    var networkLineWidth: CGFloat = 6
     /// Where *MapKit* thinks the rider is, which is not always what Core Location said.
     ///
     /// Everything this app draws and measures against is GCJ-02 (`coordinateSystem` in every
@@ -55,7 +78,8 @@ struct TransitMapView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView(frame: .zero)
+        let mapView = ChromeInsetMapView(frame: .zero)
+        mapView.chromeInsets = UIEdgeInsets(top: topChromeHeight, left: 0, bottom: 0, right: 0)
         mapView.delegate = context.coordinator
         mapView.showsCompass = true
         mapView.showsScale = true
@@ -78,6 +102,9 @@ struct TransitMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
+        (mapView as? ChromeInsetMapView)?.chromeInsets = UIEdgeInsets(
+            top: topChromeHeight, left: 0, bottom: 0, right: 0
+        )
         context.coordinator.sync(parent: self, on: mapView)
     }
 
@@ -283,7 +310,7 @@ struct TransitMapView: UIViewRepresentable {
                         addPolyline(
                             path.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) },
                             colorHex: line.colorHex,
-                            lineWidth: 4,
+                            lineWidth: parent.networkLineWidth,
                             simplify: false,
                             collection: &networkOverlays
                         )
@@ -750,12 +777,25 @@ private final class StationAnnotationView: MKAnnotationView {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
 
         tagView.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.9)
-        tagView.layer.borderColor = UIColor.separator.cgColor
         tagView.layer.borderWidth = 0.5
+        applyBorderColor()
+        // `UIView.backgroundColor` above re-resolves itself when the appearance changes; a
+        // `.cgColor` does not — it is resolved once, against whatever trait collection was current
+        // when it was read, and then frozen. That was invisible while the only way to change
+        // appearance was to leave the app; the in-app Light/Dark picker made it reachable in one
+        // tap, and every station pill kept the previous appearance's hairline until MapKit
+        // happened to rebuild its annotation views.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: StationAnnotationView, _) in
+            view.applyBorderColor()
+        }
         addSubview(symbolView)
         addSubview(tagView)
         tagView.addSubview(chineseLabel)
         tagView.addSubview(englishLabel)
+    }
+
+    private func applyBorderColor() {
+        tagView.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
     }
 
     required init?(coder: NSCoder) {
@@ -846,5 +886,49 @@ extension MapVisibleRegion {
         ]
         .map { String(format: "%.6f", $0) }
         .joined(separator: ",")
+    }
+}
+
+/// An `MKMapView` that knows how much of itself the app is drawing on top of.
+///
+/// `setRegion` does not centre a coordinate in the view's *bounds*: it centres it in the view's
+/// **layout margins** rect, which by default is the system safe area. Measured on an iPhone 17 Pro
+/// (402 x 874, safe area t62 b83): a locate-me landed the rider at y = 426.5, the middle of that
+/// safe-area band. Setting `layoutMargins.top` to 300 moved them to y = 587 — exactly the middle of
+/// the remaining band — which is how this class knows layout margins are the lever and the bounds
+/// are not.
+///
+/// The system safe area is the wrong band here, because this map is full-bleed under chrome the
+/// system knows nothing about: a search pill and an attribution/locate row floating over its top
+/// ~120 points. Centring in the safe-area band therefore put the rider's own dot *under the search
+/// bar* on a phone. An iPad has neither the floating tab bar nor as much of the screen given to
+/// that chrome, which is why this only ever looked wrong on a phone.
+///
+/// The bottom needs no addition: the tab bar is already in `safeAreaInsets`.
+private final class ChromeInsetMapView: MKMapView {
+    /// Added to the safe area, not replacing it.
+    var chromeInsets: UIEdgeInsets = .zero {
+        didSet {
+            guard chromeInsets != oldValue else { return }
+            applyLayoutMargins()
+        }
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        applyLayoutMargins()
+    }
+
+    private func applyLayoutMargins() {
+        // Taking the safe area over by hand, because `layoutMargins` is otherwise recomputed from
+        // it and would drop the chrome back off on the next layout pass.
+        insetsLayoutMarginsFromSafeArea = false
+        let safeArea = safeAreaInsets
+        layoutMargins = UIEdgeInsets(
+            top: safeArea.top + chromeInsets.top,
+            left: safeArea.left + chromeInsets.left,
+            bottom: safeArea.bottom + chromeInsets.bottom,
+            right: safeArea.right + chromeInsets.right
+        )
     }
 }

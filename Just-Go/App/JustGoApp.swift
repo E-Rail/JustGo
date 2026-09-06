@@ -11,6 +11,7 @@ enum LaunchStageTimeout: Error {
 struct JustGoApp: App {
     @State private var appState = AppState()
     @State private var container: DIContainer
+    @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
 
     init() {
         #if DEBUG
@@ -57,6 +58,11 @@ struct JustGoApp: App {
             .environment(appState)
             .environment(container)
             .environment(container.tripMemoryService)
+            // On the window's root rather than in `ContentView`, so it also covers the launch
+            // screen above and every sheet and full-screen cover presented from inside the tabs.
+            // A rider who set the app to dark and then opened Settings would otherwise have got a
+            // white sheet over a dark app.
+            .preferredColorScheme(AppAppearance(rawValue: appearance)?.colorScheme)
             .task { await runLaunchStages() }
         }
     }

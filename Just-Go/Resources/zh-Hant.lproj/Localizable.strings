@@ -1,6 +1,5 @@
 "About" = "關於";
 "Accessibility" = "無障礙";
-"Accessibility Settings" = "無障礙設定";
 "App Language" = "App 語言";
 "Arriving" = "即將到站";
 "Audio Announcement" = "語音播報";
@@ -23,7 +22,7 @@
 "Fully Accessible" = "完全無障礙";
 "Hearing" = "聽力";
 "High Contrast Mode" = "高對比模式";
-"Language changes take effect after restarting Just-Go." = "語言更改將在重新啟動 Just-Go 後生效。";
+"Takes effect after you quit and reopen the app." = "完全退出並重新開啟後生效。";
 "Large Text" = "大字體";
 "Least Walking" = "最少步行";
 "Lines" = "路線";
@@ -36,7 +35,6 @@
 "No route found between these stations." = "未找到這兩個車站之間的路線。";
 "Route data format changed. Please try again later." = "路線資料格式已變化，請稍後重試。";
 "Accessibility not verified" = "無障礙資訊未驗證";
-"Data Source" = "資料來源";
 "Feature available" = "可用";
 "Long walking segment" = "步行距離較長";
 "Walking-heavy route" = "步行較多的路線";

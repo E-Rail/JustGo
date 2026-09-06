@@ -39,3 +39,41 @@ enum AppTheme: String, CaseIterable, Identifiable {
         }
     }
 }
+
+/// Light, dark, or whatever the phone is set to.
+///
+/// Deliberately separate from `AppTheme`. That one picks the accent *hue* and has always been
+/// appearance-agnostic — `Color.adaptive(hex:)` lifts every one of its four colours for a dark
+/// background already — so the two settings compose rather than multiply, and neither has to know
+/// about the other.
+///
+/// The whole palette underneath this is either a system semantic colour
+/// (`systemGroupedBackground`, `secondarySystemGroupedBackground`) or passed through
+/// `Color.adaptive(hex:)`, which is why forcing an appearance needs no new colours: the app has
+/// been drawing both all along and simply had no way to ask for one.
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    static let storageKey = "appAppearance"
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .system: return AppLocalization.text(english: "System", simplified: "跟随系统", traditional: "跟隨系統")
+        case .light:  return AppLocalization.text(english: "Light", simplified: "浅色", traditional: "淺色")
+        case .dark:   return AppLocalization.text(english: "Dark", simplified: "深色", traditional: "深色")
+        }
+    }
+
+    /// `nil` is how SwiftUI spells "do not override", which is exactly what `.system` means.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light:  return .light
+        case .dark:   return .dark
+        }
+    }
+}

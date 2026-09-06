@@ -1479,30 +1479,41 @@ final class RoutePlanningService {
     ) -> [Route] {
         switch strategy {
         case .metroFirst:
+            // Ranks on what the chip says: a trip that rides something comes before one that does
+            // not, then the quicker of the two.
+            //
+            // This compared `$0.strategy == .metroFirst`, and **no route is ever built with that
+            // strategy**: `MetroSearchPreference.strategy` yields only the other three, and the
+            // walking and driving routes hardcode `.fastest`. The branch was therefore always
+            // false, two routes with differing strategies compared equal in both directions, and
+            // the duration line below was never reached — under this app's own default chip a
+            // 40-minute route could be listed above a 25-minute one.
+            //
+            // The `strategy ==` tie-break is gone from every case for a second reason: it made
+            // equivalence non-transitive (X < Y, X ~ Z, Y ~ Z), which is not the strict weak
+            // ordering `sorted(by:)` requires, so the resulting order was formally unspecified.
+            // Ranking on the metric each chip names needs no reference to which search built it.
             return routes.sorted {
-                if $0.strategy != $1.strategy {
-                    return $0.strategy == .metroFirst
-                }
-                return $0.totalDuration < $1.totalDuration
+                let lhsRides = $0.boardingTransitSegment != nil
+                let rhsRides = $1.boardingTransitSegment != nil
+                if lhsRides != rhsRides { return lhsRides }
+                return ($0.totalDuration, $0.transferCount, $0.walkingDistance)
+                    < ($1.totalDuration, $1.transferCount, $1.walkingDistance)
             }
         case .fastest:
             return routes.sorted {
-                if $0.strategy != $1.strategy {
-                    return $0.strategy == .fastest
-                }
-                return $0.totalDuration < $1.totalDuration
+                ($0.totalDuration, $0.transferCount, $0.walkingDistance)
+                    < ($1.totalDuration, $1.transferCount, $1.walkingDistance)
             }
         case .leastWalking:
             return routes.sorted {
-                if $0.strategy != $1.strategy {
-                    return $0.strategy == .leastWalking
-                }
-                return $0.walkingDistance < $1.walkingDistance
+                ($0.walkingDistance, $0.totalDuration, $0.transferCount)
+                    < ($1.walkingDistance, $1.totalDuration, $1.transferCount)
             }
         case .fewestTransfers:
             return routes.sorted {
-                ($0.transferCount, $0.totalDuration, $0.walkingDistance) <
-                    ($1.transferCount, $1.totalDuration, $1.walkingDistance)
+                ($0.transferCount, $0.totalDuration, $0.walkingDistance)
+                    < ($1.transferCount, $1.totalDuration, $1.walkingDistance)
             }
         }
     }

@@ -134,12 +134,18 @@ policy_source = swift_sources.fetch(policy_path)
 %w[github.com github.io githubusercontent.com jsdelivr.net wikimedia.org wikipedia.org].each do |host|
   errors << "city-pack runtime policy is missing forbidden host #{host}" unless policy_source.include?(%Q{"#{host}"})
 end
+# `session.bytes` used to be pinned here, as the marker for "the body is read under a cap". The
+# download no longer streams: `URLSession.AsyncBytes` yields one byte per async iteration and
+# measured 0.09 MB/s over loopback, so a 5 MB pack could never finish inside the 15-second
+# deadline and remote packs could not be downloaded at all. The cap is what this file cares
+# about, and it is still enforced twice — `expectedContentLength` before a byte is read, and the
+# count check asserted below after. Pin the guarantee, not the API that used to carry it.
 %w[
   SameOriginRedirectDelegate
   willPerformHTTPRedirection
   maximumManifestBytes
   maximumPackBytes
-  session.bytes
+  expectedContentLength
   allowedExternalLandingPages
   validatesStation
   stationAccessPoints
@@ -148,6 +154,8 @@ end
 ].each do |marker|
   errors << "city-pack runtime policy is missing #{marker}" unless policy_source.include?(marker)
 end
+errors << "city-pack downloads must still cap the body they accept" unless
+  policy_source.include?("data.count <= maximumBytes")
 # The station-level service-status field (crowd-control windows / live status color) was removed
 # from the pack model entirely, so a remote pack has no way to carry that data at all — a stronger
 # guarantee than the old "reject unproven service status" guard. Assert the absence instead.

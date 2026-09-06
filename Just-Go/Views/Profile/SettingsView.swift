@@ -8,9 +8,9 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(DIContainer.self) private var container
     @AppStorage(AppLocalization.preferenceKey) private var languagePreference = AppLanguagePreference.system.rawValue
+    @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage("reminderLeadMinutes") private var reminderLeadMinutes = 5
     @AppStorage("arrivalAlertLeadMinutes") private var arrivalAlertLeadMinutes = 2
-    @AppStorage(AccessBicycle.storageKey) private var usesElectricBike = false
     @State private var showTour = false
     @State private var showClearCacheConfirmation = false
     @State private var didClearCache = false
@@ -25,9 +25,11 @@ struct SettingsView: View {
             Form {
                 appearanceSection
                 notificationsSection
-                travelSection
-                dataSection
                 helpSection
+                // Last on purpose. Two red rows sat in the middle of this screen, between the
+                // e-bike toggle and Help, so scrolling past an ordinary preference meant scrolling
+                // through a pair of delete buttons. Nothing below them any more.
+                dataSection
             }
             .navigationTitle(AppLocalization.localized("Settings"))
             .navigationBarTitleDisplayMode(.inline)
@@ -50,6 +52,16 @@ struct SettingsView: View {
         Section {
             ThemePickerRow()
                 .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+            // Applies immediately and everywhere. Unlike the language row below it, this needs no
+            // relaunch: `preferredColorScheme` at the window root re-renders the live view tree.
+            Picker(
+                AppLocalization.text(english: "Light & Dark", simplified: "浅色与深色", traditional: "淺色與深色"),
+                selection: $appearance
+            ) {
+                ForEach(AppAppearance.allCases) { option in
+                    Text(option.name).tag(option.rawValue)
+                }
+            }
             Picker(AppLocalization.localized("App Language"), selection: $languagePreference) {
                 ForEach(AppLanguagePreference.allCases) { preference in
                     Text(preference.localizedName).tag(preference.rawValue)
@@ -59,7 +71,7 @@ struct SettingsView: View {
             Text(AppLocalization.text(english: "Appearance", simplified: "外观", traditional: "外觀"))
         } footer: {
             if languagePreference != AppLocalization.launchPreference.rawValue {
-                Text(AppLocalization.localized("Language changes take effect after restarting Just-Go."))
+                Text(AppLocalization.localized("Takes effect after you quit and reopen the app."))
             }
         }
     }
@@ -69,7 +81,7 @@ struct SettingsView: View {
     private var notificationsSection: some View {
         Section {
             Picker(
-                AppLocalization.text(english: "Leave reminder", simplified: "出发前提醒", traditional: "出發前提醒"),
+                AppLocalization.text(english: "Before you leave", simplified: "出发前提醒", traditional: "出發前提醒"),
                 selection: $reminderLeadMinutes
             ) {
                 ForEach(leadMinuteOptions, id: \.self) { minutes in
@@ -81,7 +93,7 @@ struct SettingsView: View {
                 }
             }
             Picker(
-                AppLocalization.text(english: "Get-off alert", simplified: "下车提醒", traditional: "下車提醒"),
+                AppLocalization.text(english: "Before your stop", simplified: "下车提醒", traditional: "下車提醒"),
                 selection: $arrivalAlertLeadMinutes
             ) {
                 ForEach(arrivalLeadMinuteOptions, id: \.self) { minutes in
@@ -95,10 +107,14 @@ struct SettingsView: View {
         } header: {
             Text(AppLocalization.localized("Notifications"))
         } footer: {
+            // Three sentences before, two of which explained which alert was which — a caption
+            // that has to name the rows above it means the rows are named wrongly, so they say
+            // "before you leave" and "before your stop" now and the footer says the one thing
+            // neither row can: iOS will ask permission.
             Text(AppLocalization.text(
-                english: "Leave reminder is the alert on a planned route. Get-off alert is the one during Live Go. The system asks for notification permission the first time you use either.",
-                simplified: "出发前提醒用于已规划的行程，下车提醒用于实时导航。首次使用时系统会询问通知权限。",
-                traditional: "出發前提醒用於已規劃的行程，下車提醒用於即時導航。首次使用時系統會詢問通知權限。"
+                english: "iOS asks for notification permission the first time you use either.",
+                simplified: "首次使用时，系统会询问通知权限。",
+                traditional: "首次使用時，系統會詢問通知權限。"
             ))
         }
     }
@@ -114,11 +130,20 @@ struct SettingsView: View {
             Button {
                 showTour = true
             } label: {
-                Label {
-                    Text(AppLocalization.text(english: "App Tour", simplified: "界面导览", traditional: "介面導覽"))
-                } icon: {
-                    Image(systemName: "sparkles.tv")
-                        .foregroundStyle(Color.accentColor)
+                HStack {
+                    Label {
+                        Text(AppLocalization.text(english: "App Tour", simplified: "界面导览", traditional: "介面導覽"))
+                    } icon: {
+                        Image(systemName: "sparkles.tv")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    Spacer()
+                    // The `NavigationLink` below draws one of these for free. Without it here, two
+                    // rows that both open a screen sat in one card and only one of them looked
+                    // like it led anywhere.
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())
             }
@@ -143,7 +168,14 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 showClearCacheConfirmation = true
             } label: {
-                Label(clearCacheTitle, systemImage: "trash")
+                // Tinted by hand. A destructive `Button` colours its *title* red and leaves the
+                // `Label`'s icon on the accent, so both rows here rendered an orange glyph beside
+                // red text — the same split that made App Tour orange next to a black FAQ.
+                Label {
+                    Text(clearCacheTitle)
+                } icon: {
+                    Image(systemName: "trash").foregroundStyle(.red)
+                }
             }
             .alert(clearCacheTitle, isPresented: $showClearCacheConfirmation) {
                 Button(clearCacheTitle, role: .destructive) {
@@ -154,10 +186,14 @@ struct SettingsView: View {
                 }
                 Button(AppLocalization.localized("Cancel"), role: .cancel) {}
             } message: {
+                // Two lists, no promises. This read "…will be deleted, and fetched again when
+                // needed. Your tags, trips, records and settings are not affected." — the app
+                // narrating its own future behaviour, which is exactly the voice this screen was
+                // swept clean of. What goes, what stays.
                 Text(AppLocalization.text(
-                    english: "Saved official station information and temporary web data will be deleted, and fetched again when needed. Your tags, trips, records and settings are not affected.",
-                    simplified: "已保存的官方车站信息和临时网页数据将被删除，需要时会重新获取。您的标签、行程、记录和设置不受影响。",
-                    traditional: "已儲存的官方車站資訊和暫存網頁資料將被刪除，需要時會重新取得。您的標籤、行程、記錄和設定不受影響。"
+                    english: "Goes: downloaded station information, cached pages. Stays: your tags, trips and settings.",
+                    simplified: "清除：已下载的车站信息、网页缓存。保留：标签、行程和设置。",
+                    traditional: "清除：已下載的車站資訊、網頁快取。保留：標籤、行程和設定。"
                 ))
             }
             // The one thing a rider gives this app that it keeps, and until now there was no way
@@ -169,7 +205,11 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 showForgetAnswersConfirmation = true
             } label: {
-                Label(forgetAnswersTitle, systemImage: "person.crop.circle.badge.xmark")
+                Label {
+                    Text(forgetAnswersTitle)
+                } icon: {
+                    Image(systemName: "person.crop.circle.badge.xmark").foregroundStyle(.red)
+                }
             }
             .alert(forgetAnswersTitle, isPresented: $showForgetAnswersConfirmation) {
                 Button(forgetAnswersTitle, role: .destructive) {
@@ -179,9 +219,9 @@ struct SettingsView: View {
                 Button(AppLocalization.localized("Cancel"), role: .cancel) {}
             } message: {
                 Text(AppLocalization.text(
-                    english: "How you rated transfers will be deleted from this device. It has never been sent anywhere else.",
-                    simplified: "您对换乘的评价将从本机删除。这些内容从未发送到别处。",
-                    traditional: "您對換乘的評價將從本機刪除。這些內容從未傳送到別處。"
+                    english: "Your transfer ratings live on this phone and nowhere else. This removes them.",
+                    simplified: "您的换乘评价只存在本机。此操作会将其删除。",
+                    traditional: "您的換乘評價只存在本機。此操作會將其刪除。"
                 ))
             }
         } header: {
@@ -216,29 +256,6 @@ struct SettingsView: View {
         )
     }
 
-    /// How the rider covers a first or last mile too long to walk. The distance ladder that picks
-    /// walking, cycling or driving is unchanged; this only says which kind of bike the cycling
-    /// answer means, and it changes both the route drawn and the time quoted.
-    private var travelSection: some View {
-        Section {
-            Toggle(
-                AppLocalization.text(
-                    english: "I ride an electric bike",
-                    simplified: "我骑电动车",
-                    traditional: "我騎電動車"
-                ),
-                isOn: $usesElectricBike
-            )
-        } header: {
-            Text(AppLocalization.text(english: "Getting around", simplified: "出行方式", traditional: "出行方式"))
-        } footer: {
-            Text(AppLocalization.text(
-                english: "Used for the ride to and from the station.",
-                simplified: "用于往返车站的接驳路段。",
-                traditional: "用於往返車站的接駁路段。"
-            ))
-        }
-    }
 }
 
 struct HelpFAQView: View {
@@ -273,15 +290,15 @@ struct HelpFAQView: View {
             } footer: {
                 if didCopyQQ {
                     Text(AppLocalization.text(
-                        english: "Copied. Open QQ and join that group.",
-                        simplified: "已复制。请打开 QQ 加入该群。",
-                        traditional: "已複製。請打開 QQ 加入該群。"
+                        english: "Copied. Search for it in QQ.",
+                        simplified: "已复制。请在 QQ 中搜索加入。",
+                        traditional: "已複製。請在 QQ 中搜尋加入。"
                     ))
                 } else {
                     Text(AppLocalization.text(
-                        english: "The number is copied to the clipboard. Just-Go does not open QQ for you.",
-                        simplified: "号码会复制到剪贴板。Just-Go 不会替您打开 QQ。",
-                        traditional: "號碼會複製到剪貼簿。Just-Go 不會替您打開 QQ。"
+                        english: "Tap to copy the number, then search for it in QQ.",
+                        simplified: "点击复制群号，然后在 QQ 中搜索加入。",
+                        traditional: "點擊複製群號，然後在 QQ 中搜尋加入。"
                     ))
                 }
             }
@@ -306,9 +323,9 @@ struct HelpFAQView: View {
                         traditional: "為什麼語言沒有立刻變？"
                     ),
                     answer: AppLocalization.text(
-                        english: "Close Just-Go completely, then open it again.",
-                        simplified: "请完全退出 Just-Go，再重新打开。",
-                        traditional: "請完全退出 Just-Go，再重新打開。"
+                        english: "Quit the app from the app switcher, then open it again.",
+                        simplified: "从后台完全退出，再重新打开。",
+                        traditional: "從背景完全退出，再重新打開。"
                     )
                 )
                 faqRow(

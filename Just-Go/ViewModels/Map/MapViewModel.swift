@@ -82,6 +82,13 @@ enum MapCameraSpan {
 final class MapViewModel {
     var stations: [Station] = []
     var visibleRegion: MapVisibleRegion?
+    /// The span the last camera move asked for, which is not what `visibleRegion` then holds.
+    /// See `mapUserLocationChanged`, the one place the difference matters.
+    ///
+    /// Written by **every** writer of `visibleRegion`, not only `updateCamera`. Three of the
+    /// four set the camera without going through it, and a stale value here is a camera jump
+    /// to a zoom nobody asked for.
+    private var requestedSpanDelta: CLLocationDegrees = MapCameraSpan.city
     var metroNetworks: [MetroNetwork] = []
     /// The trip the rider has chosen, drawn on the browse map underneath everything else.
     ///
@@ -132,6 +139,7 @@ final class MapViewModel {
     /// load could be cancelled by it mid-flight. The camera is now the single input.
     func viewportChanged(to region: MapVisibleRegion) {
         visibleRegion = region
+        requestedSpanDelta = region.maxDelta
         viewportLoadTask?.cancel()
         scheduleVisibleStationsRefresh()
 
@@ -161,6 +169,7 @@ final class MapViewModel {
 
     @discardableResult
     func selectStation(_ station: Station) async -> Station {
+        requestedSpanDelta = MapCameraSpan.station
         withAnimation {
             visibleRegion = MapVisibleRegion(
                 center: station.coordinate,
@@ -194,7 +203,14 @@ final class MapViewModel {
               let region = visibleRegion,
               region.center.distance(to: raw) < 50,
               region.center.distance(to: coordinate) > 50 else { return }
-        updateCamera(to: coordinate, spanDelta: region.maxDelta)
+        // The span this camera was *asked* for, not the one MapKit reports back. `visibleRegion`
+        // holds what MapKit settled on after widening the requested square to the screen's aspect,
+        // so re-applying `region.maxDelta` fed that widening back in as both deltas and MapKit
+        // widened it again. Measured on an iPhone 17 Pro: locate-me asked for 0.014, MapKit
+        // reported 0.0195, and this correction turned that into 0.0271 — a rider who pressed
+        // "where am I" ended up looking at nearly twice the ground they asked for, once, silently,
+        // and only on the phones this correction fires on at all.
+        updateCamera(to: coordinate, spanDelta: requestedSpanDelta)
     }
 
     /// Draws a trip and frames it. Framing is part of showing it: a trip spans more ground than the
@@ -202,6 +218,7 @@ final class MapViewModel {
     func showRoute(_ route: Route) {
         activeRoute = route
         guard let region = route.previewRegion else { return }
+        requestedSpanDelta = region.maxDelta
         withAnimation { visibleRegion = region }
     }
 
@@ -210,6 +227,7 @@ final class MapViewModel {
     }
 
     func updateCamera(to coordinate: CLLocationCoordinate2D, spanDelta: CLLocationDegrees) {
+        requestedSpanDelta = spanDelta
         withAnimation {
             visibleRegion = MapVisibleRegion(
                 center: coordinate,

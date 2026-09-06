@@ -18,6 +18,76 @@ extension RouteDetailDestination: Identifiable {
     var id: Self { self }
 }
 
+/// Everything the trip card can raise over itself, as one value.
+///
+/// These were three separate `.sheet` registrations and all three sat on `body`, the same node
+/// that presents the trip card. A node presents one sheet at a time, and on a phone the card is
+/// up from `.task` onward and carries `.interactiveDismissDisabled()` — so tapping a service
+/// notice, an operator resource, or "Log this trip" did nothing at all. They worked on iPad only
+/// because the card is a column there and nothing was presented. Same failure as the sheet
+/// shadowing `ProfileView` documents, and the same fix: one registration over an enum, moved onto
+/// `tripCardContent`, which is the view both shapes render.
+enum TripCardSheet: Identifiable, Equatable {
+    case tripNote
+    case resource(ExternalTransitResource)
+    case notice(OperatorServiceNotice)
+
+    var id: String {
+        switch self {
+        case .tripNote: return "tripNote"
+        case let .resource(resource): return "resource:\(resource.id)"
+        case let .notice(notice): return "notice:\(notice.id)"
+        }
+    }
+}
+
+/// Why a leave-time reminder was not set. One value rather than a boolean per reason, because
+/// each boolean needed its own `.alert` and two of those on one node shadow each other.
+enum ReminderAlert: Identifiable {
+    /// The system refused the request. The reachable cause is iOS's 64-pending-notification cap.
+    case notScheduled
+    case tooLate
+    case denied
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .notScheduled:
+            return AppLocalization.text(english: "Reminder not set", simplified: "未设置提醒", traditional: "未設定提醒")
+        case .tooLate:
+            return AppLocalization.text(english: "Too late to remind", simplified: "已来不及提醒", traditional: "已來不及提醒")
+        case .denied:
+            return AppLocalization.text(english: "Notifications are off", simplified: "通知已关闭", traditional: "通知已關閉")
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .notScheduled:
+            // Says what to do about it. The cap counts every app's pending notifications, so the
+            // fix is on the phone, not in here.
+            return AppLocalization.text(
+                english: "This phone is holding as many scheduled notifications as it allows. Clear some and try again.",
+                simplified: "本机待发送的通知已达上限。清理一些后再试。",
+                traditional: "本機待發送的通知已達上限。清理一些後再試。"
+            )
+        case .tooLate:
+            return AppLocalization.text(
+                english: "The leave time is already here, so no reminder was set.",
+                simplified: "出发时间已到，未设置提醒。",
+                traditional: "出發時間已到，未設定提醒。"
+            )
+        case .denied:
+            return AppLocalization.text(
+                english: "Enable notifications in Settings to get a leave-time reminder.",
+                simplified: "请在设置中开启通知以接收出发提醒。",
+                traditional: "請在設定中開啟通知以接收出發提醒。"
+            )
+        }
+    }
+}
+
 struct RouteDetailView: View {
     private let initialRoute: Route
     let preference: RoutePreference
@@ -25,11 +95,10 @@ struct RouteDetailView: View {
     let tripAnchor: TripTimeAnchor
     let accessibilityFilter: AccessibilityFilter
     @State var selectedRouteID: UUID
-    @State var showTripNote = false
+    @State var tripCardSheet: TripCardSheet?
     @State private var scheduledReminderRouteID: UUID?
     @State var tripLoggedConfirmation = false
-    @State private var showReminderDenied = false
-    @State private var showReminderTooLate = false
+    @State private var reminderAlert: ReminderAlert?
     @State var tripNote = ""
     @State var detailDestination: RouteDetailDestination?
     @State private var expandedLegs: Set<UUID> = []
@@ -59,8 +128,6 @@ struct RouteDetailView: View {
     @State private var isGuiding = false
     @State private var cityResources: [ExternalTransitResource] = []
     @State private var serviceNotices: [OperatorServiceNotice] = []
-    @State private var openedNotice: OperatorServiceNotice?
-    @State private var officialNoticeResource: ExternalTransitResource?
     // Raw theme hex for the "Navigate" button's solid fill. See RouteEntryView's
     // identical declaration for why `Color.accentColor` (dark-mode-lightened for
     // foreground use) isn't used as a fill under white text.
@@ -164,9 +231,6 @@ struct RouteDetailView: View {
             }
             #endif
         }
-        .sheet(isPresented: $showTripNote) {
-            tripNoteSheet
-        }
         .onChange(of: selectedRouteID) { _, _ in
             tripLoggedConfirmation = false
         }
@@ -205,12 +269,6 @@ struct RouteDetailView: View {
                 await loadServiceHours(cityID: cityID)
             }
             await transferAssets
-        }
-        .sheet(item: $officialNoticeResource) { resource in
-            OfficialTransitResourceViewer(resource: resource)
-        }
-        .sheet(item: $openedNotice) { item in
-            OfficialTransitResourceViewer(resource: Self.resource(for: item))
         }
     }
 
@@ -529,6 +587,19 @@ struct RouteDetailView: View {
         .background(Color.appBackground)
         .safeAreaInset(edge: .bottom) { navigateBar }
         .toolbar(.hidden, for: .navigationBar)
+        // Here, not on `body`. On a phone `body` is already presenting this card, and a
+        // node can only present one sheet — so a second registration up there never fired.
+        // `tripCardContent` is the one view both the phone sheet and the iPad column render.
+        .sheet(item: $tripCardSheet) { sheet in
+            switch sheet {
+            case .tripNote:
+                tripNoteSheet
+            case let .resource(resource):
+                OfficialTransitResourceViewer(resource: resource)
+            case let .notice(notice):
+                OfficialTransitResourceViewer(resource: Self.resource(for: notice))
+            }
+        }
     }
 
     // MARK: - Official notices
@@ -556,14 +627,14 @@ struct RouteDetailView: View {
                 }
                 ForEach(serviceNotices) { item in
                     if notice != nil || item.id != serviceNotices.first?.id { rowDivider }
-                    Button { openedNotice = item } label: { noticeRow(item) }
+                    Button { tripCardSheet = .notice(item) } label: { noticeRow(item) }
                         .buttonStyle(.plain)
                 }
                 if !serviceNotices.isEmpty, officialResource != nil { rowDivider }
                 if let resource = officialResource {
                     if notice != nil, serviceNotices.isEmpty { rowDivider.padding(.top, 8) }
                     Button {
-                        officialNoticeResource = resource
+                        tripCardSheet = .resource(resource)
                     } label: {
                         detailRow(
                             icon: "building.columns.fill",
@@ -859,7 +930,7 @@ struct RouteDetailView: View {
             } else {
                 Button {
                     tripNote = ""
-                    showTripNote = true
+                    tripCardSheet = .tripNote
                 } label: {
                     detailRow(
                         icon: "square.and.pencil",
@@ -1306,40 +1377,31 @@ struct RouteDetailView: View {
             }
             .buttonStyle(.plain)
             .disabled(reminderScheduled)
+            // One registration, three reasons. Two `.alert` modifiers on one node is the same
+            // shadowing bug this file already documents for sheets: only one can be the live
+            // presentation, so whichever lost was a dialog the rider could never be shown.
             .alert(
-                AppLocalization.text(english: "Notifications are off", simplified: "通知已关闭", traditional: "通知已關閉"),
-                isPresented: $showReminderDenied
-            ) {
+                reminderAlert?.title ?? "",
+                isPresented: Binding(
+                    get: { reminderAlert != nil },
+                    set: { if !$0 { reminderAlert = nil } }
+                ),
+                presenting: reminderAlert
+            ) { _ in
                 Button(AppLocalization.localized("OK"), role: .cancel) {}
-            } message: {
-                Text(AppLocalization.text(
-                    english: "Enable notifications in Settings to get a leave-time reminder.",
-                    simplified: "请在设置中开启通知以接收出发提醒。",
-                    traditional: "請在設定中開啟通知以接收出發提醒。"
-                ))
-            }
-            .alert(
-                AppLocalization.text(english: "Too late to remind", simplified: "已来不及提醒", traditional: "已來不及提醒"),
-                isPresented: $showReminderTooLate
-            ) {
-                Button(AppLocalization.localized("OK"), role: .cancel) {}
-            } message: {
-                Text(AppLocalization.text(
-                    english: "The leave time is already here, so no reminder was set.",
-                    simplified: "出发时间已到，未设置提醒。",
-                    traditional: "出發時間已到，未設定提醒。"
-                ))
+            } message: { alert in
+                Text(alert.message)
             }
         }
     }
 
     private func scheduleReminder(plan: DeparturePlan, routeID: UUID) async {
         guard plan.leaveByDate.addingTimeInterval(-Double(reminderLeadMinutes) * 60) > Date() else {
-            showReminderTooLate = true
+            reminderAlert = .tooLate
             return
         }
         guard await container.tripReminderService.requestAuthorization() else {
-            showReminderDenied = true
+            reminderAlert = .denied
             return
         }
         let scheduled = await container.tripReminderService.scheduleReminder(routeID: routeID, plan: plan, leadMinutes: reminderLeadMinutes)
@@ -1351,7 +1413,9 @@ struct RouteDetailView: View {
             }
             scheduledReminderRouteID = routeID
         }
-        showReminderTooLate = !scheduled
+        // Not `.tooLate`: the guard above already ruled that out, so a false here means the
+        // system refused the request — most reachably the 64-pending-notification limit.
+        if !scheduled { reminderAlert = .notScheduled }
     }
 
     func currentFeasibility() -> RouteFeasibility {

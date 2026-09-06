@@ -1,8 +1,20 @@
 import Foundation
 import CoreLocation
 
+/// Main-actor isolated, and it has to be.
+///
+/// `requestCurrentLocation()` is `async`, so before this annotation it ran on the cooperative
+/// pool (SE-0338) and inserted into `pendingLocationContinuations` from there, while
+/// `CLLocationManager` — built on the main thread by `DIContainer.configure()` — delivered
+/// `didUpdateLocations` on main and called `removeAll()` on the same dictionary. An insert lost
+/// against that wipe leaves a `CheckedContinuation` that is never resumed: the caller suspends
+/// forever and "locating…" never clears. `MapViewModel` carries the same note for the same fix.
+///
+/// `@preconcurrency` on the delegate conformance because `CLLocationManagerDelegate` is a plain
+/// ObjC protocol with no isolation of its own; the callbacks genuinely do arrive on main.
+@MainActor
 @Observable
-final class LocationService: NSObject, CLLocationManagerDelegate {
+final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var pendingLocationContinuations: [UUID: CheckedContinuation<CLLocation, Error>] = [:]
     private var locationRequestGeneration = UUID()

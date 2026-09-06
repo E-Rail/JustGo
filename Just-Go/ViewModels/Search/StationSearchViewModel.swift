@@ -1,6 +1,11 @@
 import Foundation
 import CoreLocation
 
+/// `@MainActor` for the same reason `MapViewModel` is: it publishes SwiftUI-observed state, and
+/// it reads `LocationService`, whose state now lives on the main actor. Without this the
+/// observed properties below were mutated from whatever executor an unstructured `Task` landed
+/// on.
+@MainActor
 @Observable
 final class StationSearchViewModel {
     var searchText: String = ""
@@ -16,7 +21,7 @@ final class StationSearchViewModel {
     var filter = StationFilter()
 
     var isEnrichingForFacility = false
-    private var facilityEnrichmentTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var facilityEnrichmentTask: Task<Void, Never>?
 
     private let stationSearchService: StationSearchService
     private let locationService: LocationService
@@ -28,7 +33,7 @@ final class StationSearchViewModel {
     private let recentSearchesKey = "recentStationSearches"
     private var hasRequestedSearchLocation = false
     private var stationLoadID = UUID()
-    private var searchTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var searchTask: Task<Void, Never>?
 
     init(
         stationSearchService: StationSearchService,
@@ -39,6 +44,8 @@ final class StationSearchViewModel {
         recentSearches = UserDefaults.standard.codableValue(forKey: recentSearchesKey, as: [SearchHistory].self, default: [])
     }
 
+    // `nonisolated` on the two task handles above is what lets this run, exactly as in
+    // `MapViewModel`: `deinit` cannot touch main-actor state, and `cancel()` is thread-safe.
     deinit {
         searchTask?.cancel()
         facilityEnrichmentTask?.cancel()

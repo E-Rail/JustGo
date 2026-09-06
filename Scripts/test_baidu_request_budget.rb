@@ -88,7 +88,12 @@ class RequestBudgetTest < Minitest::Test
   def test_identical_requests_in_flight_are_joined
     # The per-service caches check on the way in and write on the way out, so two identical plans
     # starting together both miss and both spend a call.
-    assert_includes CLIENT, "private var coalescing: [String: Task<Data, Error>] = [:]"
+    # The box rides along with the task because a *joined* caller needs it too: cancelling used
+    # to be armed only for the caller that started the request and tore the shared transfer down
+    # under everyone else waiting on it.
+    assert_includes CLIENT, "private var coalescing: [String: (task: Task<Data, Error>, box: SessionTaskBox)] = [:]"
+    assert_includes CLIENT, "func addWaiter()"
+    assert_includes CLIENT, "func removeWaiter()"
     coalesce_index = CLIENT.index("if let existing = coalescing[key]")
     budget_index = CLIENT.index("if let ceiling = RequestBudget.ceilings[path]")
     refute_nil coalesce_index

@@ -114,7 +114,11 @@ struct TransferPacePrompt: View {
                 // actually observed; the bucket beside it is this app's own walking model applied
                 // to that distance, and is never presented as if it had been timed.
                 if let distanceMetres, source == .mapProvider {
-                    Text("\(distanceMetres) m · \(pace.title)")
+                    // `AppLocalization.distance` renders 250米 in Chinese. The literal " m " here
+                    // spliced an English unit into a Chinese sentence (250 m · 从容) on the one
+                    // screen whose other half was already localized. The validator skips string
+                    // literals containing interpolation, which is why it passed.
+                    Text("\(AppLocalization.distance(Double(distanceMetres))) · \(pace.title)")
                         .font(.subheadline)
                         .fontWeight(.semibold)
                 } else {

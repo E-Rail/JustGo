@@ -103,6 +103,9 @@ struct LineDetailView: View {
             metroNetworks: [singleLineNetwork(for: line)],
             route: nil,
             showsUserLocation: false,
+            // Heavier than the browse map's. That weight is set so a dozen lines crossing a city
+            // stay separable; this page draws exactly one, and at 6 pt it read as a thread.
+            networkLineWidth: 9,
             onRegionChanged: nil,
             onStationSelected: { _ in }
         )

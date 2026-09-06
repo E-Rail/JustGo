@@ -53,6 +53,9 @@ struct MapContainerView: View {
     @State private var placeMatchTask: Task<Void, Never>?
     @State private var stationOpenTask: Task<Void, Never>?
     @State private var centerOnUserTask: Task<Void, Never>?
+    /// How tall the floating chrome over the map's top edge actually is. Handed to the map so it
+    /// centres the rider in the part of itself they can see rather than behind the search pill.
+    @State private var topChromeHeight: CGFloat = 0
     @State private var planTask: Task<Void, Never>?
     @State private var didCenterOnUser = false
     /// Non-nil for a few seconds after a locate attempt that could not produce a fix.
@@ -295,6 +298,10 @@ struct MapContainerView: View {
                             .lineLimit(1)
                             .layoutPriority(0)
                     }
+                    if viewModel?.activeRoute != nil {
+                        mapClearRouteButton
+                            .layoutPriority(1)
+                    }
                     mapLocateButton
                         .layoutPriority(1)
                 }
@@ -312,6 +319,13 @@ struct MapContainerView: View {
             .padding(.top, 14)
             .padding(.bottom, 10)
             .zIndex(2)
+            // Measured, not a constant: this stack is a search pill plus an attribution row that
+            // both grow with Dynamic Type, and it gains a third row whenever a locate fails.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                topChromeHeight = height
+            }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .navigationTitle(AppLocalization.localized("Map"))
@@ -405,6 +419,7 @@ struct MapContainerView: View {
             metroNetworks: viewModel?.metroNetworks ?? [],
             route: viewModel?.activeRoute,
             showsUserLocation: viewModel?.isLocationAuthorized == true,
+            topChromeHeight: topChromeHeight,
             onUserLocationChanged: { coordinate in
                 container.locationService.observeMapSpaceUserLocation(coordinate)
                 viewModel?.mapUserLocationChanged(coordinate)
@@ -531,6 +546,33 @@ struct MapContainerView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(AppLocalization.localized("Center map on my location"))
+    }
+
+    /// Takes the drawn trip off the browse map.
+    ///
+    /// Backing out of a route deliberately leaves it drawn — see `replan`, where clearing on pop
+    /// would mean drawing a trip only on a map covered by the screen that drew it. But `clearRoute`
+    /// had exactly two callers, both of them *starting a new search*, so a rider who looked at a
+    /// route and went back was left with a dark-cased line lying across their metro lines for the
+    /// rest of the session with no way to remove it. Keeping it drawn was right; having no way to
+    /// undo that was not.
+    private var mapClearRouteButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { viewModel?.clearRoute() }
+        } label: {
+            Image(systemName: "xmark")
+                .font(.headline)
+                .foregroundStyle(Color.primary)
+                .frame(width: 44, height: 44)
+                .background(.regularMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .transition(.opacity)
+        .accessibilityLabel(AppLocalization.text(
+            english: "Clear the trip from the map",
+            simplified: "从地图上清除路线",
+            traditional: "從地圖上清除路線"
+        ))
     }
 
     private func openStation(_ station: Station) {

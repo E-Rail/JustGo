@@ -52,6 +52,7 @@ actor GuangzhouStationInformationProvider: OfficialStationInformationProviding {
     /// Line name → hex colour, fetched once from the network listing. `nil` until first fetched;
     /// a best-effort empty map after a failed fetch, so a later request retries it.
     private var lineColors: [String: String]?
+    private var inFlightLineColors: Task<[String: String], Error>?
 
     init(session: URLSession? = nil, diskCache: (any OfficialStationInformationCaching)? = nil) {
         self.diskCache = diskCache
@@ -102,10 +103,19 @@ actor GuangzhouStationInformationProvider: OfficialStationInformationProviding {
 
     /// The line-colour map, fetched once and cached. Best effort: a failure yields an empty map
     /// for this request and leaves the cache unset so a later request tries again.
+    ///
+    /// The in-flight handle matters here. `lineColors` was only assigned after the `await`
+    /// returned, and an actor releases its lock across a suspension — so four stations enriched
+    /// concurrently by one route plan all saw `nil` and all issued the same POST. Holding the task
+    /// itself means the second caller joins the first.
     private func colorsForLines() async -> [String: String] {
         if let lineColors { return lineColors }
+        if let inFlightLineColors { return (try? await inFlightLineColors.value) ?? [:] }
+        let task = Task { try await Self.fetchLineColors(using: session) }
+        inFlightLineColors = task
+        defer { inFlightLineColors = nil }
         do {
-            let map = try await Self.fetchLineColors(using: session)
+            let map = try await task.value
             lineColors = map
             return map
         } catch {
